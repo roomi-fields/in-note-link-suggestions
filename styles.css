@@ -1,0 +1,213 @@
+/* In-Note Link Suggestions Plugin Styles */
+
+.in-note-links-container {
+  padding: 10px;
+  height: 100%;
+  overflow-y: auto;
+}
+
+.in-note-links-header {
+  margin-bottom: 15px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.in-note-links-header h4 {
+  margin: 0 0 5px 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.in-note-links-context {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin: 0;
+}
+
+.in-note-links-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.in-note-link-suggestion {
+  background: var(--background-secondary);
+  border-radius: 6px;
+  padding: 10px;
+  border: 1px solid var(--background-modifier-border);
+}
+
+.in-note-link-suggestion:hover {
+  border-color: var(--interactive-accent);
+}
+
+.in-note-link-suggestion.applied {
+  opacity: 0.5;
+}
+
+.suggestion-target {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.suggestion-target-title {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text-normal);
+}
+
+.suggestion-context {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+  line-height: 1.4;
+  font-family: var(--font-monospace);
+  background: var(--background-primary);
+  padding: 6px 8px;
+  border-radius: 4px;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+.suggestion-context .match {
+  background: var(--text-highlight-bg);
+  color: var(--text-normal);
+  padding: 1px 2px;
+  border-radius: 2px;
+}
+
+.suggestion-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.suggestion-actions button {
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  border: none;
+  transition: background 0.15s ease;
+}
+
+.suggestion-btn-insert {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+.suggestion-btn-insert:hover:not(:disabled) {
+  background: var(--interactive-accent-hover);
+}
+
+.suggestion-btn-insert:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.suggestion-btn-view {
+  background: var(--background-modifier-border);
+  color: var(--text-normal);
+}
+
+.suggestion-btn-view:hover {
+  background: var(--background-modifier-border-hover);
+}
+
+/* Empty state */
+.in-note-links-empty {
+  text-align: center;
+  padding: 30px 15px;
+  color: var(--text-muted);
+}
+
+.in-note-links-empty p {
+  margin: 5px 0;
+}
+
+.in-note-links-empty .empty-icon {
+  font-size: 32px;
+  margin-bottom: 10px;
+  opacity: 0.5;
+}
+
+/* Loading state */
+.in-note-links-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 30px;
+  color: var(--text-muted);
+}
+
+/* Ignore button */
+.suggestion-btn-ignore {
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--background-modifier-border) !important;
+}
+
+.suggestion-btn-ignore:hover {
+  background: var(--background-modifier-error);
+  color: var(--text-on-accent);
+  border-color: var(--background-modifier-error) !important;
+}
+
+/* Footer */
+.in-note-links-footer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 15px;
+  padding-top: 10px;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.footer-row {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.in-note-links-footer button {
+  font-size: 11px;
+  padding: 4px 12px;
+  background: transparent;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.in-note-links-footer button:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.suggestion-btn-reset {
+  color: var(--text-error) !important;
+}
+
+.suggestion-btn-reset:hover {
+  background: var(--background-modifier-error) !important;
+  color: var(--text-on-accent) !important;
+}
+
+/* More suggestions button */
+.suggestion-btn-more {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  font-weight: 500;
+}
+
+.suggestion-btn-more:hover:not(:disabled) {
+  background: var(--interactive-accent-hover);
+}
+
+.suggestion-btn-more:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  background: var(--background-modifier-border);
+  color: var(--text-muted);
+}

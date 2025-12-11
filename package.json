@@ -1,0 +1,25 @@
+{
+  "name": "in-note-link-suggestions",
+  "version": "0.1.0",
+  "description": "Obsidian plugin that suggests where to insert internal links based on Smart Connections results",
+  "main": "main.js",
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "node esbuild.config.mjs production"
+  },
+  "keywords": [
+    "obsidian",
+    "plugin",
+    "smart-connections",
+    "links"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^16.11.6",
+    "builtin-modules": "^3.3.0",
+    "esbuild": "^0.17.3",
+    "obsidian": "latest",
+    "typescript": "^5.0.0"
+  }
+}
