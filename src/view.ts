@@ -4,9 +4,10 @@
 
 import { ItemView, WorkspaceLeaf, TFile, MarkdownView, Notice } from 'obsidian';
 import type InNoteLinkSuggestionsPlugin from './main';
-import { LinkSuggestion, LinkCandidate } from './types';
+import { LinkSuggestion, LinkCandidate, ViewMode } from './types';
 import { computeLinkSuggestions } from './compute-suggestions';
 import { computeSemanticSuggestions, SemanticMatchResult } from './semantic-matcher';
+import { computeBacklinkSuggestions, BacklinkSuggestion, BacklinkMatchResult } from './backlink-matcher';
 
 export const VIEW_TYPE = 'in-note-link-suggestions-view';
 
@@ -24,6 +25,15 @@ export class InNoteLinkSuggestionsView extends ItemView {
   private totalAvailableSuggestions: number = 0;
   private cachedCandidates: LinkCandidate[] | null = null;
   private cachedNoteText: string | null = null;
+  // View mode: links-from (outgoing) or links-to (backlinks)
+  private viewMode: ViewMode = 'links-from';
+  // Backlink suggestions state
+  private backlinkSuggestions: BacklinkSuggestion[] = [];
+  private hasMoreBacklinks: boolean = false;
+  private totalAvailableBacklinks: number = 0;
+  private appliedBacklinks: Set<string> = new Set();
+  // The target file for backlinks (stays fixed while navigating to insert links)
+  private backlinkTargetFile: TFile | null = null;
 
   constructor(leaf: WorkspaceLeaf, plugin: InNoteLinkSuggestionsPlugin) {
     super(leaf);
@@ -130,6 +140,12 @@ export class InNoteLinkSuggestionsView extends ItemView {
       clearTimeout(this.refreshTimeout);
     }
 
+    // In "links-to" mode, don't auto-refresh when navigating to other notes
+    // (we want to keep showing backlinks for the original target file)
+    if (this.viewMode === 'links-to' && this.backlinkTargetFile) {
+      return;
+    }
+
     // Debounce: wait 200ms before refreshing
     this.refreshTimeout = setTimeout(() => {
       const activeFile = this.app.workspace.getActiveFile();
@@ -167,6 +183,7 @@ export class InNoteLinkSuggestionsView extends ItemView {
 
     if (activeFile !== this.currentFile) {
       this.appliedLinks.clear();
+      this.appliedBacklinks.clear();
       this.currentFile = activeFile;
       // Reset pagination state
       this.currentOffset = 0;
@@ -174,6 +191,10 @@ export class InNoteLinkSuggestionsView extends ItemView {
       this.totalAvailableSuggestions = 0;
       this.cachedCandidates = null;
       this.cachedNoteText = null;
+      // Reset backlinks state
+      this.backlinkSuggestions = [];
+      this.hasMoreBacklinks = false;
+      this.totalAvailableBacklinks = 0;
     }
 
     const container = this.containerEl.children[1];
@@ -381,14 +402,46 @@ export class InNoteLinkSuggestionsView extends ItemView {
   }
 
   /**
-   * Render header with note name
+   * Render header with note name and mode tabs
    */
   private renderHeader(container: Element, file: TFile): void {
     const header = container.createDiv({ cls: 'in-note-links-header' });
-    header.createEl('h4', { text: 'Link Suggestions' });
+
+    // Tab container
+    const tabs = header.createDiv({ cls: 'in-note-links-tabs' });
+
+    const linksFromTab = tabs.createEl('button', {
+      cls: `in-note-links-tab${this.viewMode === 'links-from' ? ' active' : ''}`,
+      text: 'Links from',
+    });
+    linksFromTab.setAttribute('title', 'Find links to insert in this note');
+    linksFromTab.addEventListener('click', () => {
+      if (this.viewMode !== 'links-from') {
+        this.viewMode = 'links-from';
+        this.backlinkTargetFile = null; // Clear backlink target when switching modes
+        this.refresh(true);
+      }
+    });
+
+    const linksToTab = tabs.createEl('button', {
+      cls: `in-note-links-tab${this.viewMode === 'links-to' ? ' active' : ''}`,
+      text: 'Links to',
+    });
+    linksToTab.setAttribute('title', 'Find places in other notes to link to this note');
+    linksToTab.addEventListener('click', () => {
+      if (this.viewMode !== 'links-to') {
+        this.viewMode = 'links-to';
+        this.refreshBacklinks(true);
+      }
+    });
+
+    // Note context - show the target file name (in links-to mode, this is the backlink target)
+    const displayFile = this.viewMode === 'links-to' && this.backlinkTargetFile
+      ? this.backlinkTargetFile
+      : file;
     header.createEl('p', {
       cls: 'in-note-links-context',
-      text: file.basename,
+      text: displayFile.basename,
     });
   }
 
@@ -618,19 +671,406 @@ export class InNoteLinkSuggestionsView extends ItemView {
     // Render header
     this.renderHeader(container, this.currentFile);
 
-    // Render suggestions list
+    // Render suggestions list based on mode
     const listContainer = container.createDiv({ cls: 'in-note-links-list' });
-    if (this.suggestions.length === 0) {
-      this.renderEmptyState(
-        listContainer,
-        "No link opportunities found."
-      );
+
+    if (this.viewMode === 'links-from') {
+      if (this.suggestions.length === 0) {
+        this.renderEmptyState(
+          listContainer,
+          "No link opportunities found."
+        );
+      } else {
+        this.renderSuggestions(listContainer, this.suggestions);
+      }
     } else {
-      this.renderSuggestions(listContainer, this.suggestions);
+      // links-to mode
+      if (this.backlinkSuggestions.length === 0) {
+        this.renderEmptyState(
+          listContainer,
+          "No backlink opportunities found."
+        );
+      } else {
+        this.renderBacklinkSuggestions(listContainer, this.backlinkSuggestions);
+      }
     }
 
     // Render footer
     this.renderFooter(container);
+  }
+
+  /**
+   * Refresh backlinks view
+   */
+  async refreshBacklinks(force: boolean = false): Promise<void> {
+    const activeFile = this.app.workspace.getActiveFile();
+
+    if (!activeFile || activeFile.extension !== 'md') {
+      return;
+    }
+
+    // Store the target file for backlinks (the note we want links TO)
+    this.backlinkTargetFile = activeFile;
+    this.currentFile = activeFile;
+
+    const container = this.containerEl.children[1];
+    container.empty();
+    container.addClass('in-note-links-container');
+
+    // Check Smart Connections
+    const scPlugin = this.getSmartConnectionsPlugin();
+    if (!scPlugin?.env) {
+      this.renderEmptyState(container, 'Waiting for Smart Connections...');
+      return;
+    }
+
+    // Render header
+    this.renderHeader(container, activeFile);
+
+    // Show loading
+    const listContainer = container.createDiv({ cls: 'in-note-links-list' });
+    listContainer.createDiv({
+      cls: 'in-note-links-loading',
+      text: 'Finding backlink opportunities...',
+    });
+
+    try {
+      // Get candidates from Smart Connections
+      const candidates = this.cachedCandidates || await this.getCandidates(scPlugin, activeFile);
+      this.cachedCandidates = candidates;
+
+      if (!candidates || candidates.length === 0) {
+        listContainer.empty();
+        this.renderEmptyState(listContainer, 'No connected notes found.');
+        this.renderFooter(container);
+        return;
+      }
+
+      // Compute backlink suggestions
+      const result = await computeBacklinkSuggestions(
+        this.app,
+        activeFile,
+        candidates,
+        scPlugin.env,
+        {
+          minSimilarity: this.plugin.settings.minSemanticSimilarity,
+          maxSuggestionsPerNote: this.plugin.settings.maxSuggestionsPerNote,
+          maxTotalSuggestions: this.plugin.settings.maxTotalSuggestions,
+          offset: 0,
+        }
+      );
+
+      this.backlinkSuggestions = result.suggestions;
+      this.hasMoreBacklinks = result.hasMore;
+      this.totalAvailableBacklinks = result.totalAvailable;
+
+      listContainer.empty();
+
+      if (this.backlinkSuggestions.length === 0) {
+        this.renderEmptyState(
+          listContainer,
+          'No backlink opportunities found. Other notes may already link here, or no good matches were found.'
+        );
+      } else {
+        this.renderBacklinkSuggestions(listContainer, this.backlinkSuggestions);
+      }
+    } catch (error) {
+      console.error('[In-Note Links] Error computing backlinks:', error);
+      listContainer.empty();
+      this.renderEmptyState(listContainer, `Error: ${(error as Error).message}`);
+    } finally {
+      this.renderFooter(container);
+    }
+  }
+
+  /**
+   * Load more backlink suggestions
+   */
+  private async loadMoreBacklinks(): Promise<void> {
+    const targetFile = this.backlinkTargetFile || this.currentFile;
+    if (!this.hasMoreBacklinks || !targetFile) {
+      new Notice('No more backlink suggestions available');
+      return;
+    }
+
+    const scPlugin = this.getSmartConnectionsPlugin();
+    if (!scPlugin?.env || !this.cachedCandidates) {
+      new Notice('Please refresh first');
+      return;
+    }
+
+    // Show loading state
+    const moreBtn = this.containerEl.querySelector('.suggestion-btn-more') as HTMLButtonElement;
+    const originalText = moreBtn?.textContent || '';
+    if (moreBtn) {
+      moreBtn.textContent = 'Loading...';
+      moreBtn.disabled = true;
+    }
+
+    const newOffset = this.backlinkSuggestions.length;
+
+    try {
+      const result = await computeBacklinkSuggestions(
+        this.app,
+        targetFile,
+        this.cachedCandidates,
+        scPlugin.env,
+        {
+          minSimilarity: this.plugin.settings.minSemanticSimilarity,
+          maxSuggestionsPerNote: this.plugin.settings.maxSuggestionsPerNote,
+          maxTotalSuggestions: 10,
+          offset: newOffset,
+        }
+      );
+
+      if (result.suggestions.length === 0) {
+        new Notice('No more backlink suggestions available');
+        this.hasMoreBacklinks = false;
+        this.reRenderCurrentView();
+        return;
+      }
+
+      this.backlinkSuggestions = [...this.backlinkSuggestions, ...result.suggestions];
+      this.hasMoreBacklinks = result.hasMore;
+      this.totalAvailableBacklinks = result.totalAvailable;
+
+      this.reRenderCurrentView();
+    } catch (error) {
+      console.error('[In-Note Links] Error loading more backlinks:', error);
+      new Notice('Error loading more backlinks');
+      if (moreBtn) {
+        moreBtn.textContent = originalText;
+        moreBtn.disabled = false;
+      }
+    }
+  }
+
+  /**
+   * Render backlink suggestions
+   */
+  private renderBacklinkSuggestions(container: Element, suggestions: BacklinkSuggestion[]): void {
+    // Filter ignored
+    const filtered = suggestions.filter(s => !this.isBacklinkIgnored(s));
+
+    if (filtered.length === 0) {
+      this.renderEmptyState(container, 'No backlink opportunities (some may be ignored).');
+      return;
+    }
+
+    for (const suggestion of filtered) {
+      const isApplied = this.isBacklinkApplied(suggestion);
+
+      const suggestionEl = container.createDiv({
+        cls: `in-note-link-suggestion backlink-suggestion${isApplied ? ' applied' : ''}`,
+      });
+
+      // Source note info (where the link will be inserted)
+      const sourceDiv = suggestionEl.createDiv({ cls: 'suggestion-source' });
+      sourceDiv.createSpan({ cls: 'suggestion-source-label', text: 'In: ' });
+      sourceDiv.createSpan({
+        cls: 'suggestion-source-title',
+        text: suggestion.sourceNoteTitle,
+      });
+
+      // Context preview
+      const contextDiv = suggestionEl.createDiv({ cls: 'suggestion-context' });
+      this.renderContext(contextDiv, suggestion.context);
+
+      // Actions
+      const actionsDiv = suggestionEl.createDiv({ cls: 'suggestion-actions' });
+
+      const insertBtn = actionsDiv.createEl('button', {
+        cls: 'suggestion-btn-insert',
+        text: isApplied ? 'Inserted' : 'Insert [[link]]',
+      });
+      if (isApplied) {
+        insertBtn.disabled = true;
+      }
+
+      insertBtn.addEventListener('click', async () => {
+        const success = await this.insertBacklink(suggestion, this.lastEditorSelection);
+        // Clear selection after use
+        this.lastEditorSelection = null;
+        if (success) {
+          suggestionEl.remove();
+        }
+      });
+
+      const viewBtn = actionsDiv.createEl('button', {
+        cls: 'suggestion-btn-view',
+        text: 'Show in note',
+      });
+      viewBtn.addEventListener('click', () => {
+        this.scrollToBacklink(suggestion);
+      });
+
+      const ignoreBtn = actionsDiv.createEl('button', {
+        cls: 'suggestion-btn-ignore',
+        text: 'Ignore',
+      });
+      ignoreBtn.addEventListener('click', async () => {
+        await this.ignoreBacklink(suggestion);
+        suggestionEl.remove();
+      });
+    }
+  }
+
+  /**
+   * Insert a backlink in another note
+   * If capturedSelection is provided, use that instead of the suggested text
+   */
+  private async insertBacklink(
+    suggestion: BacklinkSuggestion,
+    capturedSelection?: { text: string; start: number; end: number } | null
+  ): Promise<boolean> {
+    // Get the source file (the note where we insert the link)
+    const sourceFile = this.app.vault.getAbstractFileByPath(suggestion.sourceNotePath);
+    if (!(sourceFile instanceof TFile)) {
+      new Notice('Could not find source note');
+      return false;
+    }
+
+    // Find if the source file is already open in a leaf
+    const leaves = this.app.workspace.getLeavesOfType('markdown');
+    let targetLeaf = leaves.find(leaf => {
+      const view = leaf.view as MarkdownView;
+      return view.file?.path === suggestion.sourceNotePath;
+    });
+
+    // If not open, open it
+    if (!targetLeaf) {
+      targetLeaf = this.app.workspace.getLeaf(false);
+      await targetLeaf.openFile(sourceFile);
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+
+    const view = targetLeaf.view as MarkdownView;
+    const editor = view?.editor;
+    if (!editor) {
+      new Notice('Could not get editor');
+      return false;
+    }
+
+    // Check if there's a captured selection (user selected text in the source note)
+    if (capturedSelection && capturedSelection.text.length > 0) {
+      // Use captured selection text
+      const isExactTitle = capturedSelection.text.toLowerCase() === suggestion.targetTitle.toLowerCase();
+      const linkText = isExactTitle
+        ? `[[${suggestion.targetTitle}]]`
+        : `[[${suggestion.targetTitle}|${capturedSelection.text}]]`;
+
+      const startPos = editor.offsetToPos(capturedSelection.start);
+      const endPos = editor.offsetToPos(capturedSelection.end);
+      editor.replaceRange(linkText, startPos, endPos);
+    } else {
+      // No selection - use suggested position
+      const matchedText = suggestion.matchedText;
+      const isExactTitle = matchedText.toLowerCase() === suggestion.targetTitle.toLowerCase();
+      const linkText = isExactTitle
+        ? `[[${suggestion.targetTitle}]]`
+        : `[[${suggestion.targetTitle}|${matchedText}]]`;
+
+      const startPos = editor.offsetToPos(suggestion.globalStart);
+      const endPos = editor.offsetToPos(suggestion.globalEnd);
+      editor.replaceRange(linkText, startPos, endPos);
+    }
+
+    // Mark as applied and ignored
+    this.appliedBacklinks.add(this.getBacklinkKey(suggestion));
+    await this.ignoreBacklink(suggestion);
+
+    new Notice(`Inserted link to "${suggestion.targetTitle}" in "${suggestion.sourceNoteTitle}"`);
+    return true;
+  }
+
+  /**
+   * Scroll to show backlink position in source note
+   */
+  private async scrollToBacklink(suggestion: BacklinkSuggestion): Promise<void> {
+    const sourceFile = this.app.vault.getAbstractFileByPath(suggestion.sourceNotePath);
+    if (!(sourceFile instanceof TFile)) {
+      new Notice('Could not find source note');
+      return;
+    }
+
+    // Open the source file
+    const leaf = this.app.workspace.getLeaf(false);
+    await leaf.openFile(sourceFile);
+
+    // Wait for editor
+    await new Promise(resolve => setTimeout(resolve, 100));
+
+    const view = leaf.view as MarkdownView;
+    const editor = view?.editor;
+    if (!editor) return;
+
+    const pos = editor.offsetToPos(suggestion.globalStart);
+    const endPos = editor.offsetToPos(suggestion.globalEnd);
+
+    editor.scrollIntoView({
+      from: { line: Math.max(0, pos.line - 2), ch: 0 },
+      to: { line: Math.min(editor.lineCount() - 1, endPos.line + 2), ch: 0 }
+    }, true);
+
+    setTimeout(() => {
+      editor.setSelection(pos, endPos);
+      editor.focus();
+    }, 50);
+  }
+
+  /**
+   * Get key for backlink deduplication
+   */
+  private getBacklinkKey(suggestion: BacklinkSuggestion): string {
+    return `${suggestion.sourceNotePath}:${suggestion.matchedText}`;
+  }
+
+  /**
+   * Check if backlink is ignored
+   */
+  private isBacklinkIgnored(suggestion: BacklinkSuggestion): boolean {
+    const targetFile = this.backlinkTargetFile || this.currentFile;
+    if (!targetFile) return false;
+    const ignored = this.plugin.settings.ignoredBacklinks[targetFile.path] || [];
+    return ignored.includes(this.getBacklinkKey(suggestion));
+  }
+
+  /**
+   * Check if backlink was applied
+   */
+  private isBacklinkApplied(suggestion: BacklinkSuggestion): boolean {
+    return this.appliedBacklinks.has(this.getBacklinkKey(suggestion));
+  }
+
+  /**
+   * Ignore a backlink suggestion
+   */
+  private async ignoreBacklink(suggestion: BacklinkSuggestion): Promise<void> {
+    const targetFile = this.backlinkTargetFile || this.currentFile;
+    if (!targetFile) return;
+
+    const filePath = targetFile.path;
+    if (!this.plugin.settings.ignoredBacklinks[filePath]) {
+      this.plugin.settings.ignoredBacklinks[filePath] = [];
+    }
+
+    const key = this.getBacklinkKey(suggestion);
+    if (!this.plugin.settings.ignoredBacklinks[filePath].includes(key)) {
+      this.plugin.settings.ignoredBacklinks[filePath].push(key);
+      await this.plugin.saveSettings();
+    }
+  }
+
+  /**
+   * Clear ignored backlinks for current note
+   */
+  async clearIgnoredBacklinksForCurrentNote(): Promise<void> {
+    const targetFile = this.backlinkTargetFile || this.currentFile;
+    if (!targetFile) return;
+
+    delete this.plugin.settings.ignoredBacklinks[targetFile.path];
+    await this.plugin.saveSettings();
+    await this.refreshBacklinks(true);
   }
 
   /**
@@ -676,64 +1116,114 @@ export class InNoteLinkSuggestionsView extends ItemView {
   private renderFooter(container: Element): void {
     const footer = container.createDiv({ cls: 'in-note-links-footer' });
 
-    // Row 1: More suggestions button (only if semantic matching and there are more)
-    if (this.plugin.settings.enableSemanticMatch) {
+    if (this.viewMode === 'links-from') {
+      // Links-from mode footer
+
+      // Row 1: More suggestions button (only if semantic matching)
+      if (this.plugin.settings.enableSemanticMatch) {
+        const moreRow = footer.createDiv({ cls: 'footer-row' });
+        const moreBtn = moreRow.createEl('button', {
+          text: this.hasMoreSuggestions
+            ? `More suggestions (${this.totalAvailableSuggestions - this.suggestions.length} available)`
+            : 'More suggestions',
+          cls: 'suggestion-btn-more',
+        });
+
+        if (!this.hasMoreSuggestions) {
+          moreBtn.disabled = true;
+        }
+
+        moreBtn.addEventListener('click', () => {
+          this.loadMoreSuggestions();
+        });
+      }
+
+      // Row 2: Link removal buttons
+      const removeRow = footer.createDiv({ cls: 'footer-row' });
+
+      const removeAllBtn = removeRow.createEl('button', { text: 'Remove all links' });
+      removeAllBtn.addEventListener('click', () => {
+        this.removeAllLinks();
+      });
+
+      const removeSelBtn = removeRow.createEl('button', { text: 'Remove links in selection' });
+      removeSelBtn.addEventListener('click', () => {
+        this.removeLinksInSelection();
+      });
+
+      // Row 3: Refresh and reset
+      const actionRow = footer.createDiv({ cls: 'footer-row' });
+
+      const refreshBtn = actionRow.createEl('button', { text: 'Refresh' });
+      refreshBtn.addEventListener('click', () => {
+        this.appliedLinks.clear();
+        this.refresh(true);
+      });
+
+      const ignoredCount = this.currentFile
+        ? (this.plugin.settings.ignoredSuggestions[this.currentFile.path]?.length || 0)
+        : 0;
+
+      const resetBtn = actionRow.createEl('button', {
+        text: ignoredCount > 0 ? `Reset ignored (${ignoredCount})` : 'Reset ignored',
+        cls: 'suggestion-btn-reset',
+      });
+
+      if (ignoredCount === 0) {
+        resetBtn.disabled = true;
+      }
+
+      resetBtn.addEventListener('click', async () => {
+        await this.clearIgnoredForCurrentNote();
+      });
+
+    } else {
+      // Links-to (backlinks) mode footer
+
+      // Row 1: More suggestions button
       const moreRow = footer.createDiv({ cls: 'footer-row' });
       const moreBtn = moreRow.createEl('button', {
-        text: this.hasMoreSuggestions
-          ? `More suggestions (${this.totalAvailableSuggestions - this.suggestions.length} available)`
+        text: this.hasMoreBacklinks
+          ? `More suggestions (${this.totalAvailableBacklinks - this.backlinkSuggestions.length} available)`
           : 'More suggestions',
         cls: 'suggestion-btn-more',
       });
 
-      if (!this.hasMoreSuggestions) {
+      if (!this.hasMoreBacklinks) {
         moreBtn.disabled = true;
       }
 
       moreBtn.addEventListener('click', () => {
-        this.loadMoreSuggestions();
+        this.loadMoreBacklinks();
+      });
+
+      // Row 2: Refresh and reset
+      const actionRow = footer.createDiv({ cls: 'footer-row' });
+
+      const refreshBtn = actionRow.createEl('button', { text: 'Refresh' });
+      refreshBtn.addEventListener('click', () => {
+        this.appliedBacklinks.clear();
+        this.refreshBacklinks(true);
+      });
+
+      const targetFile = this.backlinkTargetFile || this.currentFile;
+      const ignoredCount = targetFile
+        ? (this.plugin.settings.ignoredBacklinks[targetFile.path]?.length || 0)
+        : 0;
+
+      const resetBtn = actionRow.createEl('button', {
+        text: ignoredCount > 0 ? `Reset ignored (${ignoredCount})` : 'Reset ignored',
+        cls: 'suggestion-btn-reset',
+      });
+
+      if (ignoredCount === 0) {
+        resetBtn.disabled = true;
+      }
+
+      resetBtn.addEventListener('click', async () => {
+        await this.clearIgnoredBacklinksForCurrentNote();
       });
     }
-
-    // Row 2: Link removal buttons
-    const removeRow = footer.createDiv({ cls: 'footer-row' });
-
-    const removeAllBtn = removeRow.createEl('button', { text: 'Remove all links' });
-    removeAllBtn.addEventListener('click', () => {
-      this.removeAllLinks();
-    });
-
-    const removeSelBtn = removeRow.createEl('button', { text: 'Remove links in selection' });
-    removeSelBtn.addEventListener('click', () => {
-      this.removeLinksInSelection();
-    });
-
-    // Row 3: Refresh and reset
-    const actionRow = footer.createDiv({ cls: 'footer-row' });
-
-    const refreshBtn = actionRow.createEl('button', { text: 'Refresh' });
-    refreshBtn.addEventListener('click', () => {
-      this.appliedLinks.clear();
-      this.refresh(true);
-    });
-
-    // Show reset ignored button (always visible, disabled if nothing to reset)
-    const ignoredCount = this.currentFile
-      ? (this.plugin.settings.ignoredSuggestions[this.currentFile.path]?.length || 0)
-      : 0;
-
-    const resetBtn = actionRow.createEl('button', {
-      text: ignoredCount > 0 ? `Reset ignored (${ignoredCount})` : 'Reset ignored',
-      cls: 'suggestion-btn-reset',
-    });
-
-    if (ignoredCount === 0) {
-      resetBtn.disabled = true;
-    }
-
-    resetBtn.addEventListener('click', async () => {
-      await this.clearIgnoredForCurrentNote();
-    });
   }
 
   /**

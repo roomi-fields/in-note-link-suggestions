@@ -45,6 +45,9 @@ export interface ComputeOptions {
   contextChars?: number;
 }
 
+/** View mode for the suggestions panel */
+export type ViewMode = 'links-from' | 'links-to';
+
 export interface PluginSettings {
   maxSuggestionsPerNote: number;
   maxTotalSuggestions: number;
@@ -53,6 +56,8 @@ export interface PluginSettings {
   minSemanticSimilarity: number; // 0-1, minimum similarity score
   /** Ignored suggestions per note: { notePath: ["targetPath:matchedText", ...] } */
   ignoredSuggestions: Record<string, string[]>;
+  /** Ignored backlink suggestions: { activeNotePath: ["sourceNotePath:matchedText", ...] } */
+  ignoredBacklinks: Record<string, string[]>;
 }
 
 export const DEFAULT_SETTINGS: PluginSettings = {
@@ -62,6 +67,7 @@ export const DEFAULT_SETTINGS: PluginSettings = {
   enableSemanticMatch: true,
   minSemanticSimilarity: 0.6, // Lower = more suggestions, Higher = more precise
   ignoredSuggestions: {},
+  ignoredBacklinks: {},
 };
 
 /**

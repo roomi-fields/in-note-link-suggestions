@@ -12,6 +12,37 @@
   border-bottom: 1px solid var(--background-modifier-border);
 }
 
+/* Tabs */
+.in-note-links-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+
+.in-note-links-tab {
+  flex: 1;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  background: var(--background-secondary);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.in-note-links-tab:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.in-note-links-tab.active {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  border-color: var(--interactive-accent);
+}
+
 .in-note-links-header h4 {
   margin: 0 0 5px 0;
   font-size: 14px;
@@ -210,4 +241,23 @@
   cursor: not-allowed;
   background: var(--background-modifier-border);
   color: var(--text-muted);
+}
+
+/* Backlink suggestion styles */
+.backlink-suggestion .suggestion-source {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+.suggestion-source-label {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.suggestion-source-title {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text-accent);
 }
