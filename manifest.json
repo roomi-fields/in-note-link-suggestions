@@ -3,7 +3,7 @@
   "name": "In-Note Link Suggestions",
   "version": "0.1.0",
   "minAppVersion": "1.0.0",
-  "description": "Suggests where to insert internal links [[Note]] based on Smart Connections results. Requires Smart Connections plugin.",
+  "description": "Suggests where to insert internal links [[Note]] based on article frontmatter (title, focus_keyword, tags) or Smart Connections.",
   "author": "",
   "authorUrl": "",
   "isDesktopOnly": false

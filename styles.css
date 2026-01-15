@@ -261,3 +261,121 @@
   font-size: 13px;
   color: var(--text-accent);
 }
+
+/* Folder selector modal */
+.folder-selector-modal {
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.folder-selector-instructions {
+  color: var(--text-muted);
+  font-size: 13px;
+  margin-bottom: 15px;
+}
+
+.folder-tree-container {
+  flex: 1;
+  overflow-y: auto;
+  max-height: 400px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  padding: 10px;
+  background: var(--background-secondary);
+}
+
+.folder-tree-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  cursor: pointer;
+}
+
+.folder-tree-item:hover {
+  background: var(--background-modifier-hover);
+  border-radius: 4px;
+}
+
+.folder-tree-item input[type="checkbox"] {
+  margin: 0;
+  cursor: pointer;
+}
+
+.folder-tree-item label {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  flex: 1;
+}
+
+.folder-icon {
+  font-size: 14px;
+}
+
+.folder-file-count {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-left: auto;
+}
+
+.folder-selector-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 15px;
+  padding-top: 15px;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+/* Settings - selected folders */
+.selected-folders-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+  margin-bottom: 15px;
+}
+
+.selected-folder-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.remove-folder-btn {
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+
+.remove-folder-btn:hover {
+  color: var(--text-error);
+}
+
+.selected-folders-empty {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-style: italic;
+  margin-top: 8px;
+  margin-bottom: 15px;
+}
+
+/* Frontmatter backlink term info */
+.suggestion-term-info {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+
+.suggestion-term {
+  background: var(--background-secondary-alt);
+  padding: 2px 6px;
+  border-radius: 3px;
+}

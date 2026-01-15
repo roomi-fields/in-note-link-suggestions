@@ -8,6 +8,7 @@ import { LinkSuggestion, LinkCandidate, ViewMode } from './types';
 import { computeLinkSuggestions } from './compute-suggestions';
 import { computeSemanticSuggestions, SemanticMatchResult } from './semantic-matcher';
 import { computeBacklinkSuggestions, BacklinkSuggestion, BacklinkMatchResult } from './backlink-matcher';
+import { buildConceptIndex, findConceptsInText, findBacklinksInCache, ConceptEntry, FrontmatterBacklinkSuggestion } from './frontmatter-matcher';
 
 export const VIEW_TYPE = 'in-note-link-suggestions-view';
 
@@ -34,6 +35,14 @@ export class InNoteLinkSuggestionsView extends ItemView {
   private appliedBacklinks: Set<string> = new Set();
   // The target file for backlinks (stays fixed while navigating to insert links)
   private backlinkTargetFile: TFile | null = null;
+  // The source file for "links from" mode (to return to after navigating)
+  private linksFromSourceFile: TFile | null = null;
+  // Cached concept index for frontmatter matching (fallback if no cache)
+  private conceptIndex: ConceptEntry[] | null = null;
+  private conceptIndexBuildTime: number = 0;
+  // Frontmatter backlink suggestions
+  private frontmatterBacklinks: FrontmatterBacklinkSuggestion[] = [];
+  private appliedFrontmatterBacklinks: Set<string> = new Set();
 
   constructor(leaf: WorkspaceLeaf, plugin: InNoteLinkSuggestionsPlugin) {
     super(leaf);
@@ -211,16 +220,6 @@ export class InNoteLinkSuggestionsView extends ItemView {
       return;
     }
 
-    // Check if Smart Connections is available
-    const scPlugin = this.getSmartConnectionsPlugin();
-    if (!scPlugin) {
-      this.renderEmptyState(
-        container,
-        'Smart Connections plugin is not installed or enabled. Please install it first.'
-      );
-      return;
-    }
-
     // Render header
     this.renderHeader(container, activeFile);
 
@@ -232,19 +231,6 @@ export class InNoteLinkSuggestionsView extends ItemView {
     });
 
     try {
-      // Get candidates from Smart Connections (cache for pagination)
-      const candidates = await this.getCandidates(scPlugin, activeFile);
-      this.cachedCandidates = candidates;
-
-      if (!candidates || candidates.length === 0) {
-        listContainer.empty();
-        this.renderEmptyState(
-          listContainer,
-          'No connected notes found. Smart Connections needs to index your vault first.'
-        );
-        return;
-      }
-
       // Read note content (cache for pagination)
       const noteText = await this.app.vault.read(activeFile);
       this.cachedNoteText = noteText;
@@ -252,31 +238,72 @@ export class InNoteLinkSuggestionsView extends ItemView {
       // Reset pagination on fresh refresh
       this.currentOffset = 0;
 
-      // Compute suggestions
+      // Compute suggestions based on mode
       console.log('[In-Note Links] Computing suggestions...');
+      console.log('[In-Note Links] Frontmatter matching enabled:', this.plugin.settings.enableFrontmatterMatch);
       console.log('[In-Note Links] Semantic matching enabled:', this.plugin.settings.enableSemanticMatch);
 
-      if (this.plugin.settings.enableSemanticMatch) {
-        // Use fine-grained semantic matching (1-4 word n-grams)
-        try {
-          const result = await computeSemanticSuggestions(
-            noteText,
-            candidates,
-            scPlugin.env,
-            {
-              minSimilarity: this.plugin.settings.minSemanticSimilarity,
+      if (this.plugin.settings.enableFrontmatterMatch) {
+        // Use frontmatter-based matching (title, focus_keyword, tags)
+        await this.computeFrontmatterSuggestions(noteText, activeFile, listContainer);
+      } else {
+        // Need Smart Connections for semantic/lexical matching
+        const scPlugin = this.getSmartConnectionsPlugin();
+        if (!scPlugin) {
+          listContainer.empty();
+          this.renderEmptyState(
+            listContainer,
+            'Smart Connections plugin is not installed or enabled. Please install it first.'
+          );
+          this.renderFooter(container);
+          return;
+        }
+
+        // Get candidates from Smart Connections (cache for pagination)
+        const candidates = await this.getCandidates(scPlugin, activeFile);
+        this.cachedCandidates = candidates;
+
+        if (!candidates || candidates.length === 0) {
+          listContainer.empty();
+          this.renderEmptyState(
+            listContainer,
+            'No connected notes found. Smart Connections needs to index your vault first.'
+          );
+          this.renderFooter(container);
+          return;
+        }
+
+        if (this.plugin.settings.enableSemanticMatch) {
+          // Use fine-grained semantic matching (1-4 word n-grams)
+          try {
+            const result = await computeSemanticSuggestions(
+              noteText,
+              candidates,
+              scPlugin.env,
+              {
+                minSimilarity: this.plugin.settings.minSemanticSimilarity,
+                maxSuggestionsPerNote: this.plugin.settings.maxSuggestionsPerNote,
+                maxTotalSuggestions: this.plugin.settings.maxTotalSuggestions,
+                maxNGramWords: 4,
+                offset: 0,
+              }
+            );
+            this.suggestions = result.suggestions;
+            this.hasMoreSuggestions = result.hasMore;
+            this.totalAvailableSuggestions = result.totalAvailable;
+          } catch (error) {
+            console.error('[In-Note Links] Semantic matching failed, falling back to lexical:', error);
+            // Fallback to lexical matching
+            this.suggestions = computeLinkSuggestions(noteText, candidates, {
               maxSuggestionsPerNote: this.plugin.settings.maxSuggestionsPerNote,
               maxTotalSuggestions: this.plugin.settings.maxTotalSuggestions,
-              maxNGramWords: 4,
-              offset: 0,
-            }
-          );
-          this.suggestions = result.suggestions;
-          this.hasMoreSuggestions = result.hasMore;
-          this.totalAvailableSuggestions = result.totalAvailable;
-        } catch (error) {
-          console.error('[In-Note Links] Semantic matching failed, falling back to lexical:', error);
-          // Fallback to lexical matching
+              enableFuzzyMatch: false,
+            });
+            this.hasMoreSuggestions = false;
+            this.totalAvailableSuggestions = this.suggestions.length;
+          }
+        } else {
+          // Use lexical matching only (title/alias exact match)
           this.suggestions = computeLinkSuggestions(noteText, candidates, {
             maxSuggestionsPerNote: this.plugin.settings.maxSuggestionsPerNote,
             maxTotalSuggestions: this.plugin.settings.maxTotalSuggestions,
@@ -285,15 +312,6 @@ export class InNoteLinkSuggestionsView extends ItemView {
           this.hasMoreSuggestions = false;
           this.totalAvailableSuggestions = this.suggestions.length;
         }
-      } else {
-        // Use lexical matching only (title/alias exact match)
-        this.suggestions = computeLinkSuggestions(noteText, candidates, {
-          maxSuggestionsPerNote: this.plugin.settings.maxSuggestionsPerNote,
-          maxTotalSuggestions: this.plugin.settings.maxTotalSuggestions,
-          enableFuzzyMatch: false,
-        });
-        this.hasMoreSuggestions = false;
-        this.totalAvailableSuggestions = this.suggestions.length;
       }
 
       console.log('[In-Note Links] Found suggestions:', this.suggestions.length, 'hasMore:', this.hasMoreSuggestions);
@@ -332,6 +350,251 @@ export class InNoteLinkSuggestionsView extends ItemView {
       console.log('[In-Note Links] SC smart_sources:', !!sc.env?.smart_sources);
     }
     return sc;
+  }
+
+  /**
+   * Compute suggestions using frontmatter-based matching
+   */
+  private async computeFrontmatterSuggestions(
+    noteText: string,
+    activeFile: TFile,
+    listContainer: HTMLElement
+  ): Promise<void> {
+    // Use plugin's article cache if available, otherwise build our own
+    let conceptIndex: ConceptEntry[];
+
+    if (this.plugin.articleCache) {
+      conceptIndex = this.plugin.articleCache.getConceptIndex();
+      console.log('[In-Note Links] Using cached concept index with', conceptIndex.length, 'concepts');
+    } else {
+      // Fallback: build index on demand (refresh every 5 minutes)
+      const now = Date.now();
+      const indexAge = now - this.conceptIndexBuildTime;
+      const FIVE_MINUTES = 5 * 60 * 1000;
+
+      if (!this.conceptIndex || indexAge > FIVE_MINUTES) {
+        console.log('[In-Note Links] Building concept index (no cache)...');
+        this.conceptIndex = await buildConceptIndex(
+          this.app,
+          this.plugin.settings.articleFolders
+        );
+        this.conceptIndexBuildTime = now;
+      }
+      conceptIndex = this.conceptIndex;
+      console.log('[In-Note Links] Using fallback concept index with', conceptIndex.length, 'concepts');
+    }
+
+    // Find concepts in text
+    const result = findConceptsInText(
+      noteText,
+      activeFile.path,
+      conceptIndex,
+      {
+        maxSuggestionsPerTarget: this.plugin.settings.maxSuggestionsPerNote,
+        maxTotalSuggestions: this.plugin.settings.maxTotalSuggestions,
+        minTermLength: this.plugin.settings.minTermLength,
+      }
+    );
+
+    this.suggestions = result.suggestions;
+    this.hasMoreSuggestions = false; // Frontmatter matching returns all at once
+    this.totalAvailableSuggestions = result.totalMatches;
+
+    console.log('[In-Note Links] Frontmatter matching found', result.suggestions.length, 'suggestions');
+
+    listContainer.empty();
+
+    if (this.suggestions.length === 0) {
+      this.renderEmptyState(
+        listContainer,
+        'No link opportunities found. No article titles, keywords, or tags match text in this note.'
+      );
+    } else {
+      this.renderSuggestions(listContainer, this.suggestions);
+    }
+  }
+
+  /**
+   * Compute backlinks using frontmatter-based matching
+   */
+  private async computeFrontmatterBacklinks(
+    activeFile: TFile,
+    listContainer: HTMLElement
+  ): Promise<void> {
+    if (!this.plugin.articleCache) {
+      listContainer.empty();
+      this.renderEmptyState(
+        listContainer,
+        'Article cache not initialized. Please wait or check settings.'
+      );
+      return;
+    }
+
+    // Get current note's frontmatter
+    const cache = this.app.metadataCache.getFileCache(activeFile);
+    const fm = cache?.frontmatter || {};
+
+    const currentFrontmatter = {
+      title: fm.title || activeFile.basename,
+      focus_keyword: fm.focus_keyword,
+      tags: Array.isArray(fm.tags) ? fm.tags : fm.tags ? [fm.tags] : [],
+    };
+
+    console.log('[In-Note Links] Finding backlinks for:', currentFrontmatter);
+
+    // Find backlinks using cache
+    const cachedArticles = this.plugin.articleCache.getArticles();
+    const result = findBacklinksInCache(
+      activeFile.path,
+      currentFrontmatter,
+      cachedArticles,
+      {
+        maxSuggestionsPerSource: this.plugin.settings.maxSuggestionsPerNote,
+        maxTotalSuggestions: this.plugin.settings.maxTotalSuggestions,
+        minTermLength: this.plugin.settings.minTermLength,
+      }
+    );
+
+    this.frontmatterBacklinks = result.suggestions;
+    console.log('[In-Note Links] Frontmatter backlinks found:', result.suggestions.length);
+
+    listContainer.empty();
+
+    if (this.frontmatterBacklinks.length === 0) {
+      this.renderEmptyState(
+        listContainer,
+        'No backlink opportunities found. No other articles mention this note\'s title, keywords, or tags.'
+      );
+    } else {
+      this.renderFrontmatterBacklinks(listContainer, this.frontmatterBacklinks, activeFile);
+    }
+  }
+
+  /**
+   * Render frontmatter backlink suggestions
+   */
+  private renderFrontmatterBacklinks(
+    container: HTMLElement,
+    suggestions: FrontmatterBacklinkSuggestion[],
+    targetFile: TFile
+  ): void {
+    for (const suggestion of suggestions) {
+      const key = `${suggestion.sourcePath}:${suggestion.matchedText}:${suggestion.start}`;
+      const isApplied = this.appliedFrontmatterBacklinks.has(key);
+
+      const suggestionEl = container.createDiv({
+        cls: `in-note-link-suggestion backlink-suggestion${isApplied ? ' applied' : ''}`,
+      });
+
+      // Source info
+      const sourceEl = suggestionEl.createDiv({ cls: 'suggestion-source' });
+      sourceEl.createSpan({ cls: 'suggestion-source-label', text: 'In: ' });
+      const sourceLink = sourceEl.createSpan({
+        cls: 'suggestion-source-title',
+        text: suggestion.sourceTitle,
+      });
+      sourceLink.addEventListener('click', () => {
+        const file = this.app.vault.getAbstractFileByPath(suggestion.sourcePath);
+        if (file instanceof TFile) {
+          this.app.workspace.getLeaf(false).openFile(file);
+        }
+      });
+
+      // Target info (what it would link to)
+      const targetEl = suggestionEl.createDiv({ cls: 'suggestion-target' });
+      targetEl.createSpan({ text: '→ ' });
+      targetEl.createSpan({
+        cls: 'suggestion-target-title',
+        text: targetFile.basename,
+      });
+
+      // Context with highlighted match
+      const contextEl = suggestionEl.createDiv({ cls: 'suggestion-context' });
+      const contextHtml = suggestion.context.replace(
+        /\[([^\]]+)\]/,
+        '<span class="match">$1</span>'
+      );
+      contextEl.innerHTML = contextHtml;
+
+      // Matched term info
+      const termEl = suggestionEl.createDiv({ cls: 'suggestion-term-info' });
+      termEl.createSpan({
+        cls: 'suggestion-term',
+        text: `Matched: "${suggestion.matchedTerm}"`,
+      });
+
+      // Actions
+      const actionsEl = suggestionEl.createDiv({ cls: 'suggestion-actions' });
+
+      // Insert button
+      const insertBtn = actionsEl.createEl('button', {
+        text: isApplied ? 'Inserted' : 'Insert link',
+        cls: 'suggestion-btn-insert',
+      });
+      insertBtn.disabled = isApplied;
+      insertBtn.addEventListener('click', async () => {
+        await this.insertFrontmatterBacklink(suggestion, targetFile, key);
+        insertBtn.textContent = 'Inserted';
+        insertBtn.disabled = true;
+        suggestionEl.addClass('applied');
+      });
+
+      // View button
+      const viewBtn = actionsEl.createEl('button', {
+        text: 'Show in note',
+        cls: 'suggestion-btn-view',
+      });
+      viewBtn.addEventListener('click', async () => {
+        const file = this.app.vault.getAbstractFileByPath(suggestion.sourcePath);
+        if (file instanceof TFile) {
+          const leaf = this.app.workspace.getLeaf(false);
+          await leaf.openFile(file);
+          // Highlight the match
+          const view = leaf.view;
+          if (view instanceof MarkdownView && view.editor) {
+            const from = view.editor.offsetToPos(suggestion.start);
+            const to = view.editor.offsetToPos(suggestion.end);
+            view.editor.setSelection(from, to);
+            view.editor.scrollIntoView({ from, to }, true);
+          }
+        }
+      });
+    }
+  }
+
+  /**
+   * Insert a frontmatter backlink
+   */
+  private async insertFrontmatterBacklink(
+    suggestion: FrontmatterBacklinkSuggestion,
+    targetFile: TFile,
+    key: string
+  ): Promise<void> {
+    const sourceFile = this.app.vault.getAbstractFileByPath(suggestion.sourcePath);
+    if (!(sourceFile instanceof TFile)) {
+      new Notice('Source file not found');
+      return;
+    }
+
+    // Read source file content
+    const content = await this.app.vault.read(sourceFile);
+
+    // Create the wikilink
+    const wikilink = `[[${targetFile.basename}|${suggestion.matchedText}]]`;
+
+    // Replace the matched text with the wikilink
+    const newContent =
+      content.substring(0, suggestion.start) +
+      wikilink +
+      content.substring(suggestion.end);
+
+    // Write back
+    await this.app.vault.modify(sourceFile, newContent);
+
+    // Mark as applied
+    this.appliedFrontmatterBacklinks.add(key);
+
+    new Notice(`Link inserted in ${suggestion.sourceTitle}`);
   }
 
   /**
@@ -415,10 +678,17 @@ export class InNoteLinkSuggestionsView extends ItemView {
       text: 'Links from',
     });
     linksFromTab.setAttribute('title', 'Find links to insert in this note');
-    linksFromTab.addEventListener('click', () => {
+    linksFromTab.addEventListener('click', async () => {
       if (this.viewMode !== 'links-from') {
         this.viewMode = 'links-from';
         this.backlinkTargetFile = null; // Clear backlink target when switching modes
+        // Return to the original source file if we navigated away
+        if (this.linksFromSourceFile) {
+          const currentFile = this.app.workspace.getActiveFile();
+          if (currentFile?.path !== this.linksFromSourceFile.path) {
+            await this.app.workspace.getLeaf(false).openFile(this.linksFromSourceFile);
+          }
+        }
         this.refresh(true);
       }
     });
@@ -430,6 +700,8 @@ export class InNoteLinkSuggestionsView extends ItemView {
     linksToTab.setAttribute('title', 'Find places in other notes to link to this note');
     linksToTab.addEventListener('click', () => {
       if (this.viewMode !== 'links-to') {
+        // Save the current file as the "links from" source before switching
+        this.linksFromSourceFile = this.app.workspace.getActiveFile();
         this.viewMode = 'links-to';
         this.refreshBacklinks(true);
       }
@@ -717,13 +989,6 @@ export class InNoteLinkSuggestionsView extends ItemView {
     container.empty();
     container.addClass('in-note-links-container');
 
-    // Check Smart Connections
-    const scPlugin = this.getSmartConnectionsPlugin();
-    if (!scPlugin?.env) {
-      this.renderEmptyState(container, 'Waiting for Smart Connections...');
-      return;
-    }
-
     // Render header
     this.renderHeader(container, activeFile);
 
@@ -735,44 +1000,58 @@ export class InNoteLinkSuggestionsView extends ItemView {
     });
 
     try {
-      // Get candidates from Smart Connections
-      const candidates = this.cachedCandidates || await this.getCandidates(scPlugin, activeFile);
-      this.cachedCandidates = candidates;
-
-      if (!candidates || candidates.length === 0) {
-        listContainer.empty();
-        this.renderEmptyState(listContainer, 'No connected notes found.');
-        this.renderFooter(container);
-        return;
-      }
-
-      // Compute backlink suggestions
-      const result = await computeBacklinkSuggestions(
-        this.app,
-        activeFile,
-        candidates,
-        scPlugin.env,
-        {
-          minSimilarity: this.plugin.settings.minSemanticSimilarity,
-          maxSuggestionsPerNote: this.plugin.settings.maxSuggestionsPerNote,
-          maxTotalSuggestions: this.plugin.settings.maxTotalSuggestions,
-          offset: 0,
-        }
-      );
-
-      this.backlinkSuggestions = result.suggestions;
-      this.hasMoreBacklinks = result.hasMore;
-      this.totalAvailableBacklinks = result.totalAvailable;
-
-      listContainer.empty();
-
-      if (this.backlinkSuggestions.length === 0) {
-        this.renderEmptyState(
-          listContainer,
-          'No backlink opportunities found. Other notes may already link here, or no good matches were found.'
-        );
+      // Use frontmatter mode if enabled
+      if (this.plugin.settings.enableFrontmatterMatch) {
+        await this.computeFrontmatterBacklinks(activeFile, listContainer);
       } else {
-        this.renderBacklinkSuggestions(listContainer, this.backlinkSuggestions);
+        // Use Smart Connections for semantic backlinks
+        const scPlugin = this.getSmartConnectionsPlugin();
+        if (!scPlugin?.env) {
+          listContainer.empty();
+          this.renderEmptyState(listContainer, 'Waiting for Smart Connections...');
+          this.renderFooter(container);
+          return;
+        }
+
+        // Get candidates from Smart Connections
+        const candidates = this.cachedCandidates || await this.getCandidates(scPlugin, activeFile);
+        this.cachedCandidates = candidates;
+
+        if (!candidates || candidates.length === 0) {
+          listContainer.empty();
+          this.renderEmptyState(listContainer, 'No connected notes found.');
+          this.renderFooter(container);
+          return;
+        }
+
+        // Compute backlink suggestions
+        const result = await computeBacklinkSuggestions(
+          this.app,
+          activeFile,
+          candidates,
+          scPlugin.env,
+          {
+            minSimilarity: this.plugin.settings.minSemanticSimilarity,
+            maxSuggestionsPerNote: this.plugin.settings.maxSuggestionsPerNote,
+            maxTotalSuggestions: this.plugin.settings.maxTotalSuggestions,
+            offset: 0,
+          }
+        );
+
+        this.backlinkSuggestions = result.suggestions;
+        this.hasMoreBacklinks = result.hasMore;
+        this.totalAvailableBacklinks = result.totalAvailable;
+
+        listContainer.empty();
+
+        if (this.backlinkSuggestions.length === 0) {
+          this.renderEmptyState(
+            listContainer,
+            'No backlink opportunities found. Other notes may already link here, or no good matches were found.'
+          );
+        } else {
+          this.renderBacklinkSuggestions(listContainer, this.backlinkSuggestions);
+        }
       }
     } catch (error) {
       console.error('[In-Note Links] Error computing backlinks:', error);

@@ -58,6 +58,12 @@ export interface PluginSettings {
   ignoredSuggestions: Record<string, string[]>;
   /** Ignored backlink suggestions: { activeNotePath: ["sourceNotePath:matchedText", ...] } */
   ignoredBacklinks: Record<string, string[]>;
+  /** Use frontmatter-based matching instead of semantic matching */
+  enableFrontmatterMatch: boolean;
+  /** Folders to scan for article frontmatters */
+  articleFolders: string[];
+  /** Minimum term length for frontmatter matching */
+  minTermLength: number;
 }
 
 export const DEFAULT_SETTINGS: PluginSettings = {
@@ -68,6 +74,9 @@ export const DEFAULT_SETTINGS: PluginSettings = {
   minSemanticSimilarity: 0.6, // Lower = more suggestions, Higher = more precise
   ignoredSuggestions: {},
   ignoredBacklinks: {},
+  enableFrontmatterMatch: true, // Default to frontmatter mode
+  articleFolders: ['Articles'],
+  minTermLength: 4,
 };
 
 /**

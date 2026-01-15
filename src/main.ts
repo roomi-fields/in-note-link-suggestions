@@ -1,20 +1,30 @@
 /**
  * In-Note Link Suggestions Plugin
  *
- * Suggests where to insert internal links [[Note]] based on Smart Connections results.
- * Requires the Smart Connections plugin to be installed and enabled.
+ * Suggests where to insert internal links [[Note]] based on article frontmatter
+ * (title, focus_keyword, tags) or Smart Connections.
  */
 
 import { Plugin, Notice, WorkspaceLeaf } from 'obsidian';
 import { PluginSettings, DEFAULT_SETTINGS } from './types';
 import { InNoteLinkSuggestionsView, VIEW_TYPE } from './view';
 import { InNoteLinkSettingsTab } from './settings';
+import { ArticleCache } from './article-cache';
 
 export default class InNoteLinkSuggestionsPlugin extends Plugin {
   settings: PluginSettings = DEFAULT_SETTINGS;
+  articleCache: ArticleCache | null = null;
 
   async onload(): Promise<void> {
     await this.loadSettings();
+
+    // Initialize article cache for frontmatter mode
+    if (this.settings.enableFrontmatterMatch) {
+      this.articleCache = new ArticleCache(this.app);
+      this.app.workspace.onLayoutReady(async () => {
+        await this.articleCache?.initialize(this.settings.articleFolders);
+      });
+    }
 
     // Register the view
     this.registerView(VIEW_TYPE, (leaf) => new InNoteLinkSuggestionsView(leaf, this));
@@ -50,14 +60,31 @@ export default class InNoteLinkSuggestionsPlugin extends Plugin {
     // Add settings tab
     this.addSettingTab(new InNoteLinkSettingsTab(this.app, this));
 
-    // Check for Smart Connections on load
+    // Check for Smart Connections on load (only if not using frontmatter mode)
     this.app.workspace.onLayoutReady(() => {
       this.checkSmartConnections();
     });
   }
 
   onunload(): void {
-    // Cleanup
+    // Cleanup article cache
+    this.articleCache?.destroy();
+    this.articleCache = null;
+  }
+
+  /**
+   * Reinitialize article cache (called when settings change)
+   */
+  async reinitializeCache(): Promise<void> {
+    if (this.settings.enableFrontmatterMatch) {
+      if (!this.articleCache) {
+        this.articleCache = new ArticleCache(this.app);
+      }
+      await this.articleCache.initialize(this.settings.articleFolders);
+    } else {
+      this.articleCache?.destroy();
+      this.articleCache = null;
+    }
   }
 
   /**
@@ -75,15 +102,18 @@ export default class InNoteLinkSuggestionsPlugin extends Plugin {
   }
 
   /**
-   * Check if Smart Connections is available
+   * Check if Smart Connections is available (only needed for semantic mode)
    */
   private checkSmartConnections(): void {
-    const plugins = (this.app as any).plugins?.plugins;
-    if (!plugins?.['smart-connections']) {
-      new Notice(
-        'In-Note Link Suggestions requires Smart Connections plugin. Please install and enable it.',
-        10000
-      );
+    // Only warn if semantic matching is enabled and SC is missing
+    if (!this.settings.enableFrontmatterMatch && this.settings.enableSemanticMatch) {
+      const plugins = (this.app as any).plugins?.plugins;
+      if (!plugins?.['smart-connections']) {
+        new Notice(
+          'Semantic matching requires Smart Connections plugin. Switch to frontmatter mode or install Smart Connections.',
+          10000
+        );
+      }
     }
   }
 
